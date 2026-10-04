@@ -2,3 +2,8 @@ __pycache__/
 .pytest_cache/
 *.pyc
 eval/report.json
+.env
+data/uploads/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/

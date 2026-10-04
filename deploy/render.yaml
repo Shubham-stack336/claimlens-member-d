@@ -1,0 +1,46 @@
+# Render blueprint for the ClaimLens monorepo (move to the repo root, or point Render at deploy/render.yaml).
+# Free tier: the backend sleeps when idle, and the first request after that is slow.
+# Check that the database plan allows `CREATE EXTENSION vector` before relying on it.
+services:
+  - type: web
+    name: claimlens-backend
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile.backend
+    dockerContext: .
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: claimlens-db
+          property: connectionString
+      - key: CORS_ORIGINS
+        value: https://claimlens-frontend.onrender.com
+      - key: UPLOAD_DIR
+        value: /tmp/uploads
+      - key: MOCK_AI
+        value: "0"
+      - key: MOCK_DOCS
+        value: "0"
+      - key: GROQ_API_KEY
+        sync: false  # set in the Render dashboard, never in the repo
+
+  - type: web
+    name: claimlens-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://claimlens-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+databases:
+  - name: claimlens-db
+    plan: free
+    databaseName: claimlens
+    user: claimlens

@@ -1,0 +1,52 @@
+# ClaimLens local stack. In the monorepo: `docker compose up` from a clean clone.
+# Copy .env.example to .env first. The db service also works on its own in this
+# repo: `docker compose up db`.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: claimlens
+      POSTGRES_PASSWORD: claimlens
+      POSTGRES_DB: claimlens
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimlens -d claimlens"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://claimlens:claimlens@db:5432/claimlens
+      UPLOAD_DIR: /data/uploads
+      CORS_ORIGINS: http://localhost:5173
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  uploads:

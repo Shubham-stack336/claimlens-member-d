@@ -1,0 +1,36 @@
+# Backend image for the ClaimLens monorepo (build context = repo root).
+# Expects: backend/requirements.txt, backend/app/main.py exposing `app` with /healthz,
+# docint/ (this package), ai/ (claimlens_ai) and contracts/.
+#   docker build -f deploy/Dockerfile.backend -t claimlens-backend .
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FASTEMBED_CACHE_PATH=/app/models \
+    PYTHONPATH=/app
+
+WORKDIR /app
+RUN useradd --create-home --uid 10001 app
+
+# Dependencies first, so code edits do not reinstall everything.
+COPY backend/requirements.txt backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
+
+COPY contracts/ contracts/
+COPY docint/ docint/
+COPY ai/ ai/
+RUN pip install --no-cache-dir ./docint ./ai
+
+# Bake the embedding model into the image so the container does not download it on cold start.
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')" \
+    || echo "fastembed not installed; skipping model bake"
+
+COPY backend/ backend/
+RUN mkdir -p /data/uploads && chown -R app:app /app /data
+
+USER app
+WORKDIR /app/backend
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
