@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install "pytest>=8"
+      - name: Unit tests
+        run: pytest -q
+      - name: Evaluation on synthetic cases
+        run: python -m eval.run
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval/report.json

@@ -1,0 +1,12 @@
+[project]
+name = "claimlens-member-d"
+version = "0.1.0"
+description = "ClaimLens rules, extraction, safety and evaluation (Member D)"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
