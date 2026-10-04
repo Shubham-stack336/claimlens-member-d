@@ -30,7 +30,7 @@ NEGATIONS = [
 
 @dataclass(frozen=True)
 class Probe:
-    kind: str  # real, invented, number_changed, negated, spliced
+    kind: str  # real, real_reformatted, real_typo, invented, number_changed, negated, spliced
     clause_id: str | None
     quote: str
     is_fake: bool
@@ -48,9 +48,32 @@ def _change_first_number(text: str) -> str | None:
     return text[: m.start()] + changed + text[m.end():]
 
 
+def _strip_punctuation(text: str) -> str:
+    """How a quote looks after an LLM drops punctuation and casing."""
+    text = re.sub(r"(?<=\d),(?=\d)", "", text)  # "40,000" -> "40000", still one number
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s%]", " ", text)).strip().lower()
+
+
+def _swap_letters(text: str) -> str | None:
+    """A one-character slip (OCR or typing) in the longest plain word."""
+    words = [w for w in re.findall(r"[A-Za-z]{7,}", text)]
+    if not words:
+        return None
+    word = max(words, key=len)
+    typo = word[:2] + word[3] + word[2] + word[4:]
+    return text.replace(word, typo, 1)
+
+
 def build_probes(policy_text: str) -> list[Probe]:
     clauses = _clauses(policy_text)
     probes = [Probe("real", cid, text, False) for cid, text in clauses]
+
+    # Real quotes with harmless differences: these must still be accepted.
+    probes += [Probe("real_reformatted", cid, _strip_punctuation(text), False) for cid, text in clauses]
+    for cid, text in clauses:
+        typo = _swap_letters(text)
+        if typo:
+            probes.append(Probe("real_typo", cid, typo, False))
 
     probes += [Probe("invented", None, text, True) for text in INVENTED]
 
@@ -65,7 +88,7 @@ def build_probes(policy_text: str) -> list[Probe]:
                 probes.append(Probe("negated", cid, text.replace(old, new), True))
 
     # First half of one clause glued to the second half of the next one.
-    for (cid_a, a), (_, b) in zip(clauses, clauses[1:]):
+    for (cid_a, a), (_, b) in zip(clauses, clauses[1:], strict=False):
         a_words, b_words = a.split(), b.split()
         spliced = " ".join(a_words[: len(a_words) // 2] + b_words[len(b_words) // 2:])
         probes.append(Probe("spliced", cid_a, spliced, True))
@@ -90,8 +113,9 @@ def exact_match_grounding(quote: str, policy_text: str) -> bool:
 def run_benchmark(policy_text: str, grounding_fn=exact_match_grounding) -> dict:
     probes = build_probes(policy_text)
     caught = missed = real_passed = false_alarms = 0
-    missed_examples = []
+    missed_examples, false_alarm_examples = [], []
     by_kind: dict[str, list[int]] = {}
+    real_by_kind: dict[str, list[int]] = {}
 
     for probe in probes:
         grounded = bool(grounding_fn(probe.quote, policy_text))
@@ -107,6 +131,11 @@ def run_benchmark(policy_text: str, grounding_fn=exact_match_grounding) -> dict:
         else:
             real_passed += grounded
             false_alarms += not grounded
+            if not grounded:
+                false_alarm_examples.append({"kind": probe.kind, "quote": probe.quote})
+            stats = real_by_kind.setdefault(probe.kind, [0, 0])
+            stats[0] += grounded
+            stats[1] += 1
 
     fakes = caught + missed
     reals = real_passed + false_alarms
@@ -116,5 +145,7 @@ def run_benchmark(policy_text: str, grounding_fn=exact_match_grounding) -> dict:
         "real_quotes_accepted": f"{real_passed} of {reals}",
         "false_alarms": false_alarms,
         "by_kind": {k: f"{v[0]} of {v[1]}" for k, v in by_kind.items()},
+        "real_by_kind": {k: f"{v[0]} of {v[1]}" for k, v in real_by_kind.items()},
         "missed_examples": missed_examples,
+        "false_alarm_examples": false_alarm_examples,
     }

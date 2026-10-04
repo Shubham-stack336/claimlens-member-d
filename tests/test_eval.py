@@ -1,8 +1,9 @@
 import json
 
+from claimlens_docs.grounding import quote_in_text
 from eval.faults import build_probes, exact_match_grounding, run_benchmark
 from eval.metrics import Count, case_verdict_agrees, recall_at_k
-from eval.run import POLICY_PATH, load_cases, main
+from eval.run import POLICY_PATH, gate_failures, load_cases, main
 
 
 def test_count_reports_exact_numbers():
@@ -45,11 +46,32 @@ def test_a_grounding_check_that_accepts_everything_catches_nothing():
     assert result["catch_rate"] == 0.0
 
 
-def test_fallback_grounding_catches_all_fakes():
+def test_exact_match_catches_fakes_but_rejects_reformatted_real_quotes():
     policy = POLICY_PATH.read_text(encoding="utf-8")
     result = run_benchmark(policy, exact_match_grounding)
     assert result["catch_rate"] == 1.0
+    assert result["real_by_kind"]["real"] == "14 of 14"
+    assert result["false_alarms"] > 0  # why the real locator uses fuzzy matching
+
+
+def test_real_locator_catches_all_fakes_without_false_alarms():
+    policy = POLICY_PATH.read_text(encoding="utf-8")
+    result = run_benchmark(policy, quote_in_text)
+    assert result["catch_rate"] == 1.0
     assert result["false_alarms"] == 0
+
+
+def test_gate_passes_on_current_code(tmp_path):
+    report = main(["--gate", "--out", str(tmp_path / "report.json")])
+    assert gate_failures(report) == []
+    assert report["letter_extraction_pdf"]["matched"] == f"{report['num_cases']} of {report['num_cases']}"
+
+
+def test_gate_fails_when_a_metric_drops(tmp_path):
+    report = main(["--out", str(tmp_path / "report.json")])
+    report["fault_benchmark"]["catch_rate"] = 0.5
+    report["fault_benchmark"]["false_alarms"] = 2
+    assert len(gate_failures(report)) == 2
 
 
 def test_full_run_with_predictions(tmp_path):
