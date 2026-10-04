@@ -41,10 +41,10 @@ def parse_indian_date(text: str) -> date:
     m = _TEXT_DATE.match(s)
     if m:
         day, month_word, year = int(m.group(1)), m.group(2).lower(), int(m.group(3))
-        month = MONTHS.get(month_word[:4]) or MONTHS.get(month_word[:3])
-        if month is None:
+        month_number = MONTHS.get(month_word[:4]) or MONTHS.get(month_word[:3])
+        if month_number is None:
             raise ValueError(f"Unknown month name in date: {text!r}")
-        return date(year, month, day)
+        return date(year, month_number, day)
 
     raise ValueError(f"Not a recognised date: {text!r}")
 

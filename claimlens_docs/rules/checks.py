@@ -6,7 +6,7 @@ verifier and the UI can show next to a finding.
 """
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,6 +16,16 @@ class RuleResult:
     rule: str
     passed: bool
     detail: str
+    inputs: dict = field(default_factory=dict, compare=False, hash=False)
+
+    def to_dict(self) -> dict:
+        """Contract 4.5 shape: {rule, inputs, result, explanation}, JSON friendly."""
+        return {
+            "rule": self.rule,
+            "inputs": {k: str(v) for k, v in self.inputs.items()},
+            "result": self.passed,
+            "explanation": self.detail,
+        }
 
 
 def add_months(start: date, months: int) -> date:
@@ -45,7 +55,7 @@ def waiting_period_end(policy_start: date, amount: int, unit: str) -> date:
 
 
 def waiting_period_elapsed(
-    policy_start: date, event_date: date, amount: int, unit: str
+    policy_start: date, event_date: date, amount: int, unit: str = "months"
 ) -> RuleResult:
     """Has the waiting period finished by the date of treatment or admission?"""
     end = waiting_period_end(policy_start, amount, unit)
@@ -62,7 +72,8 @@ def waiting_period_elapsed(
             f"runs until {end:%d %b %Y}; the event on {event_date:%d %b %Y} is "
             f"{days_short} day(s) inside it."
         )
-    return RuleResult("waiting_period_elapsed", passed, detail)
+    inputs = {"policy_start": policy_start, "event_date": event_date, "amount": amount, "unit": unit}
+    return RuleResult("waiting_period_elapsed", passed, detail, inputs)
 
 
 def event_within_policy_period(
@@ -77,7 +88,8 @@ def event_within_policy_period(
         f"Event on {event_date:%d %b %Y} is {where} the policy period "
         f"{period_start:%d %b %Y} to {period_end:%d %b %Y}."
     )
-    return RuleResult("event_within_policy_period", passed, detail)
+    inputs = {"event_date": event_date, "period_start": period_start, "period_end": period_end}
+    return RuleResult("event_within_policy_period", passed, detail, inputs)
 
 
 def amount_within_limit(claimed: Decimal, limit: Decimal) -> RuleResult:
@@ -93,4 +105,4 @@ def amount_within_limit(claimed: Decimal, limit: Decimal) -> RuleResult:
             f"Claimed Rs. {claimed:,} exceeds the limit of Rs. {limit:,} "
             f"by Rs. {claimed - limit:,}."
         )
-    return RuleResult("amount_within_limit", passed, detail)
+    return RuleResult("amount_within_limit", passed, detail, {"claimed": claimed, "limit": limit})

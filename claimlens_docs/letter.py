@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal
 
 from .parsers import parse_indian_date, parse_inr_amount
+from .schemas import ParsedDocument, RejectionExtraction, RejectionReason
 
 # MVP categories from the PRD. Anything else goes to a human.
 WAITING_PERIOD = "waiting_period"
@@ -40,12 +41,20 @@ FIELD_PATTERNS = {
     "admission_date": re.compile(rf"Date\s+of\s+Admission\s*[:\-]\s*({DATE_TEXT})", re.I),
     "discharge_date": re.compile(rf"Date\s+of\s+Discharge\s*[:\-]\s*({DATE_TEXT})", re.I),
     "amount_claimed": re.compile(rf"Amount\s+Claimed\s*[:\-]\s*({AMOUNT_TEXT})", re.I),
+    "amount_rejected": re.compile(
+        r"(?:Amount\s+(?:Rejected|Disallowed|Deducted)|(?:Rejected|Disallowed)\s+Amount)"
+        rf"\s*[:\-]\s*({AMOUNT_TEXT})",
+        re.I,
+    ),
 }
 
 REASON_HEADER = re.compile(r"^.*\breasons?\b.*:\s*$", re.I | re.M)
 NUMBERED_ITEM = re.compile(r"^\s*(?:\d{1,2}[.)]|\([a-z0-9]\)|[a-z][.)])\s+", re.I | re.M)
+# A sentence may wrap onto the next line (PDF text always does), but never
+# crosses a blank line.
+_SENTENCE_CHAR = r"(?:[^.\n]|\n(?!\s*\n))"
 TRIGGER_SENTENCE = re.compile(
-    r"[^.\n]*\b(?:repudiated|rejected|denied|not payable|not admissible)\b[^.\n]*\.", re.I
+    rf"{_SENTENCE_CHAR}*\b(?:repudiated|rejected|denied|not payable|not admissible)\b{_SENTENCE_CHAR}*\.", re.I
 )
 CLAUSE_REF = re.compile(r"\b(?:Clause|Section)\s+(\d+(?:\.\d+)*)", re.I)
 
@@ -67,6 +76,7 @@ class LetterExtraction:
     admission_date: date | None = None
     discharge_date: date | None = None
     amount_claimed: Decimal | None = None
+    amount_rejected: Decimal | None = None
     reasons: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -131,10 +141,11 @@ def extract_letter(letter: str) -> LetterExtraction:
         if not m:
             continue
         raw = m.group(1).strip()
+        value: object
         try:
             if name.endswith("_date"):
                 value = parse_indian_date(raw)
-            elif name == "amount_claimed":
+            elif name.startswith("amount_"):
                 value = parse_inr_amount(raw)
             else:
                 value = raw.rstrip("/-")
@@ -143,3 +154,42 @@ def extract_letter(letter: str) -> LetterExtraction:
         setattr(result, name, value)
     result.reasons = extract_reasons(letter)
     return result
+
+
+def extract_rejection(doc: ParsedDocument) -> RejectionExtraction:
+    """Contract 4.3: extract a parsed letter, with page and bbox for every reason."""
+    from .ingest import chunks_in_span, document_text
+
+    text, spans = document_text(doc)
+    found = extract_letter(text)
+    reasons = []
+    for i, reason in enumerate(found.reasons, start=1):
+        covered = chunks_in_span(spans, reason.start, reason.end)
+        first_page = covered[0].page if covered else 1
+        boxes = [c.bbox for c in covered if c.page == first_page]
+        bbox = [
+            min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes),
+        ] if boxes else [0.0, 0.0, 0.0, 0.0]
+        reasons.append(RejectionReason(
+            reason_id=f"r{i}",
+            text=" ".join(reason.text.split()),
+            category=reason.category,
+            page=first_page,
+            bbox=bbox,
+            clause_refs=reason.clause_refs,
+        ))
+
+    def as_float(value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    return RejectionExtraction(
+        claim_no=found.claim_number,
+        policy_no=found.policy_number,
+        admission_date=found.admission_date,
+        discharge_date=found.discharge_date,
+        claimed_amount=as_float(found.amount_claimed),
+        rejected_amount=as_float(found.amount_rejected),
+        reasons=reasons,
+        letter_date=found.letter_date,
+    )

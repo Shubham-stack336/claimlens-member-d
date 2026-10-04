@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 from decimal import Decimal
 
+from . import schemas
 from .letter import AMOUNT_TEXT, DATE_TEXT
 from .parsers import parse_indian_date, parse_inr_amount
 
@@ -126,13 +127,14 @@ def extract_policy_facts(text: str) -> PolicyFacts:
         if "room rent" not in line_text.lower():
             continue
         pct = PERCENT_OF_SI.search(line_text)
-        amount = re.search(AMOUNT_TEXT, line_text)
+        amount_match = re.search(AMOUNT_TEXT, line_text)
         value = None
         if pct and facts.sum_insured:
-            value = (facts.sum_insured.value * Decimal(pct.group(1)) / 100).quantize(Decimal("1"))
+            sum_insured = Decimal(str(facts.sum_insured.value))
+            value = (sum_insured * Decimal(pct.group(1)) / 100).quantize(Decimal("1"))
             facts.notes.append(f"Room rent limit computed as {pct.group(1)}% of sum insured")
-        elif amount:
-            value = parse_inr_amount(amount.group(0))
+        elif amount_match:
+            value = parse_inr_amount(amount_match.group(0))
         if value is not None:
             facts.room_rent_limit_per_day = Fact(
                 value=value, unit="INR/day", start=line.start(), end=line.end(), snippet=line_text.strip()
@@ -159,3 +161,67 @@ def apply_corrections(facts: PolicyFacts, corrections: dict) -> PolicyFacts:
             current.value = value
             current.confirmed_by_user = True
     return facts
+
+
+WAITING_KINDS = {
+    "initial_waiting": "initial",
+    "specified_disease_waiting": "specified_disease",
+    "pre_existing_waiting": "pre_existing",
+}
+
+
+def _to_months(fact: Fact) -> tuple[int, int | None]:
+    """(months, days). A wait stated in days is rounded to months and keeps its days."""
+    unit = (fact.unit or "months").rstrip("s")
+    value = int(fact.value)  # type: ignore[call-overload]
+    if unit == "day":
+        return max(1, round(value / 30)), value
+    if unit == "year":
+        return value * 12, None
+    return value, None
+
+
+def extract_policy_facts_doc(doc: schemas.ParsedDocument) -> schemas.PolicyFacts:
+    """Contract 4.3 (exported as claimlens_docs.extract_policy_facts): facts for a parsed policy."""
+    from .ingest import chunks_in_span, document_text
+
+    text, spans = document_text(doc)
+    facts = extract_policy_facts(text)
+
+    def chunk_for(fact: Fact | None) -> str | None:
+        if fact is None or fact.start is None or fact.end is None:
+            return None
+        hit = chunks_in_span(spans, fact.start, fact.end)
+        return hit[0].chunk_id if hit else None
+
+    def value(fact: Fact | None):
+        return None if fact is None else fact.value
+
+    def as_float(fact: Fact | None) -> float | None:
+        return None if fact is None else float(fact.value)  # type: ignore[arg-type]
+
+    waiting = []
+    for name, kind in WAITING_KINDS.items():
+        fact = getattr(facts, name)
+        if fact is not None:
+            months, days = _to_months(fact)
+            waiting.append(schemas.WaitingPeriod(kind=kind, months=months, days=days, chunk_id=chunk_for(fact)))
+
+    sources = {}
+    for name in ("policy_number", "first_inception_date", "period_start", "period_end",
+                 "sum_insured", "room_rent_limit_per_day", *WAITING_KINDS):
+        chunk_id = chunk_for(getattr(facts, name))
+        if chunk_id:
+            sources[name] = chunk_id
+
+    return schemas.PolicyFacts(
+        policy_start=value(facts.period_start),
+        policy_end=value(facts.period_end),
+        sum_insured=as_float(facts.sum_insured),
+        waiting_periods=waiting,
+        policy_no=value(facts.policy_number),
+        first_inception_date=value(facts.first_inception_date),
+        room_rent_limit_per_day=as_float(facts.room_rent_limit_per_day),
+        source_chunk_ids=sources,
+        notes=facts.notes,
+    )

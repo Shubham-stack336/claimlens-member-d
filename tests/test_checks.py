@@ -11,7 +11,6 @@ from claimlens_docs.rules import (
     waiting_period_end,
 )
 
-
 # --- add_months: month-end and leap-day edge cases ---
 
 @pytest.mark.parametrize("start, months, expected", [
@@ -108,3 +107,15 @@ def test_amount_over_limit_reports_excess():
 def test_amount_rejects_negative():
     with pytest.raises(ValueError):
         amount_within_limit(Decimal("-1"), Decimal("5000"))
+
+
+def test_contract_signature_defaults_to_months():
+    assert waiting_period_elapsed(date(2023, 4, 1), date(2025, 4, 1), 24).passed
+
+
+def test_rule_result_contract_shape():
+    out = waiting_period_elapsed(date(2023, 4, 1), date(2025, 1, 10), 24, "months").to_dict()
+    assert set(out) == {"rule", "inputs", "result", "explanation"}
+    assert out["result"] is False
+    assert out["inputs"]["policy_start"] == "2023-04-01"
+    assert "inside it" in out["explanation"]
